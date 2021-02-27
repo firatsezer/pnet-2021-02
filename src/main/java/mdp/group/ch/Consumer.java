@@ -1,16 +1,20 @@
 package mdp.group.ch;
 
 
-import mdp.group.ch.entitys.DataCollection;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.annotation.TopicPartition;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -18,55 +22,71 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+import java.time.Duration;
 
+@Slf4j
 @Component
 public class Consumer {
 
-    private final Logger logger = Logger.getLogger(Consumer.class.getName());
-
 
     @Autowired
-    DataRepository repo;
+    private KafkaListenerEndpointRegistry endpointRegistry;
 
-    //    @KafkaListener(id = "fooGroup", autoStartup = "false", topics = "${KAFKA_TOPICS}", groupId = "${KAFKA_GROUP_ID}")
-    public void consume(@Payload ConsumerRecord<String, String> message) throws IOException {
+    @Value("${POST_TIME_OUT_SEC:30}")
+    private int post_time_out_sec;
 
-        logger.info("Consum Message with OFFSET :" + message.offset());
+    @Value("${REST_ENDPOINT_URL}")
+    private String rest_endpoint_url;
 
-        DataCollection dc = new DataCollection();
-        dc.setOffset(message.offset());
-        dc.setData(message.value());
-        repo.save(dc);
-
-    }
 
     @KafkaListener
-            (
-                    id = "pnet.consumer.1",
-                    topicPartitions =
-                            {
-                                    @TopicPartition(topic = "blabla", partitions = {"0"})
-                            },
-                    groupId = "group_one",
+            (id = "pnet.consumer.1",
+                    topicPartitions = {
+                            @TopicPartition
+                                    (
+                                            topic = "${KAFKA_TOPICS}",
+                                            partitions = {"${PARTITION}"}
+                                    )
+                    },
+                    groupId = "${KAFKA_GROUP_ID}",
                     containerFactory = "listenerContainerFactory",
-                    autoStartup = "false"
-            )
+                    autoStartup = "false")
     public void consumeFromPartition(@Payload ConsumerRecords<String, String> records,
-                                     Acknowledgment acknowledgment) {
-        logger.info("CONSUME RECORDS COUNT: " + records.count());
-
+                                     Acknowledgment ack) {
+        log.info("CONSUME RECORDS COUNT: " + records.count());
 
         try {
-            executePost(records);
-            acknowledgment.acknowledge();
+            if (executePost(records) == 200) {
+
+                // COMMIT OFFSET
+                ack.acknowledge();
+
+                // SICH SELBST STOPPEN
+                MessageListenerContainer listenerContainer =
+                        endpointRegistry.getListenerContainer("pnet.consumer.1");
+                if (listenerContainer.isRunning()) {
+                    log.info("STOP CHANNEL");
+                    listenerContainer.stop();
+                }
+            }
         } catch (IOException | InterruptedException e) {
-            logger.log(Level.SEVERE, null, e);
+            log.error("FEHLER BEIM SENDEN DER DATEN AN DEN REST_ENDPOINT: {}", rest_endpoint_url, e);
         }
     }
 
-    private void executePost(ConsumerRecords<String, String> records) throws IOException, InterruptedException {
+
+    @Scheduled(cron = "${START_CHANNEL}")
+    private void start_CHANNEL() {
+
+        MessageListenerContainer listenerContainer =
+                endpointRegistry.getListenerContainer("pnet.consumer.1");
+        if (!listenerContainer.isRunning()) {
+            log.info("START CHANNEL");
+            listenerContainer.start();
+        }
+    }
+
+    private int executePost(ConsumerRecords<String, String> records) throws IOException, InterruptedException {
 
         JSONArray arr = new JSONArray();
 
@@ -79,18 +99,17 @@ public class Consumer {
 
         collection.put("ChargeableItemCollection", arr);
 
-
         HttpClient client = HttpClient.newHttpClient();
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("https://requestinspector.com/inspect/01ezf2yksezh21e628ax8azxqs"))
+                .uri(URI.create(rest_endpoint_url))
+                .timeout(Duration.ofSeconds(post_time_out_sec))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(collection.toString(4)))
                 .build();
 
-
         HttpResponse<String> response =
                 client.send(request, HttpResponse.BodyHandlers.ofString());
+        return response.statusCode();
     }
-
 }
