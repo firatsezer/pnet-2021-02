@@ -105,7 +105,7 @@ public class Consumer {
                 .uri(URI.create(rest_endpoint_url))
                 .timeout(Duration.ofSeconds(post_time_out_sec))
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(collection.toString(4)))
+                .POST(HttpRequest.BodyPublishers.ofString(collection.toString(4))) // toString(4) == pretty_print
                 .build();
 
         HttpResponse<String> response =
