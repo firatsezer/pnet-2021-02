@@ -1,4 +1,4 @@
-package mdp.group.ch;
+package ch.post.it;
 
 
 import lombok.extern.slf4j.Slf4j;
